@@ -4,6 +4,18 @@ import { ArrowDownUp, Bell, Carrot, Check, ChevronDown, CircleHelp, Clock3, Cook
 import './App.css'
 import './Interactions.css'
 
+axios.defaults.baseURL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
+const savedAccessToken = localStorage.getItem('pantry-access-token')
+if (savedAccessToken) axios.defaults.headers.common.Authorization = `Bearer ${savedAccessToken}`
+axios.interceptors.response.use((response) => response, (error) => {
+  if (error.response?.status === 401 && !error.config?.url?.includes('/api/auth/login')) {
+    localStorage.removeItem('pantry-access-token')
+    delete axios.defaults.headers.common.Authorization
+    window.dispatchEvent(new Event('pantry-auth-expired'))
+  }
+  return Promise.reject(error)
+})
+
 const categories = ['All items', 'Produce', 'Dairy', 'Pantry', 'Protein', 'Bakery', 'Other']
 const storageKeys = ['recipes', 'photos', 'shopping-list', 'expiry-days', 'diet', 'name', 'last-unit', 'user-id']
 storageKeys.forEach((key) => {
@@ -39,6 +51,12 @@ const pantryLoadError = (error) => error.response?.status === 403
 
 function App() {
   const [items, setItems] = useState([])
+  const [authReady, setAuthReady] = useState(() => !localStorage.getItem('pantry-access-token'))
+  const [isSignedIn, setIsSignedIn] = useState(false)
+  const [loginEmail, setLoginEmail] = useState('')
+  const [loginPassword, setLoginPassword] = useState('')
+  const [loginError, setLoginError] = useState('')
+  const [loginLoading, setLoginLoading] = useState(false)
   const [summary, setSummary] = useState(null)
   const [categoryCounts, setCategoryCounts] = useState({})
   const [activeCategory, setActiveCategory] = useState('All items')
@@ -82,6 +100,15 @@ function App() {
     return () => clearTimeout(timer)
   }, [notice, noticeKind])
 
+  useEffect(() => {
+    const expired = () => { setIsSignedIn(false); setLoginError('Your sign-in expired. Enter your pantry password again.') }
+    window.addEventListener('pantry-auth-expired', expired)
+    const token = localStorage.getItem('pantry-access-token')
+    if (!token) return () => window.removeEventListener('pantry-auth-expired', expired)
+    axios.get('/api/auth/session').then(() => setIsSignedIn(true)).catch(() => localStorage.removeItem('pantry-access-token')).finally(() => setAuthReady(true))
+    return () => window.removeEventListener('pantry-auth-expired', expired)
+  }, [])
+
   const loadItems = async ({ category = activeCategory, search = query, sort = sortMode } = {}) => {
     try {
       const { data } = await axios.get('/api/ingredients', { params: { userId, category, q: search || undefined, sortBy: sort === 'urgent' ? 'expiryDate' : sort === 'name' ? 'name' : 'createdAt', sortOrder: sort === 'recent' ? 'desc' : 'asc' } })
@@ -102,6 +129,7 @@ function App() {
     } catch (error) { setNotice(pantryLoadError(error)) }
   }
   useEffect(() => {
+    if (!isSignedIn) return undefined
     let cancelled = false
     const timeout = setTimeout(() => axios.get('/api/ingredients', { params: { userId, category: activeCategory, q: query || undefined, sortBy: sortMode === 'urgent' ? 'expiryDate' : sortMode === 'name' ? 'name' : 'createdAt', sortOrder: sortMode === 'recent' ? 'desc' : 'asc' } }).then(({ data }) => {
       if (!cancelled) { setItems(data); setNotice('') }
@@ -110,8 +138,9 @@ function App() {
     }).finally(() => { if (!cancelled) setLoading(false) })
     , query ? 250 : 0)
     return () => { cancelled = true; clearTimeout(timeout) }
-  }, [activeCategory, sortMode, query, userId])
+  }, [activeCategory, sortMode, query, userId, isSignedIn])
   useEffect(() => {
+    if (!isSignedIn) return undefined
     let cancelled = false
     Promise.all([
       axios.get('/api/ingredients/summary', { params: { userId, days: expiryAlertDays } }),
@@ -122,7 +151,7 @@ function App() {
       setCategoryCounts(Object.fromEntries(categoriesResponse.data.categories.map(({ name, count }) => [name, count])))
     }).catch((error) => { if (!cancelled) setNotice(pantryLoadError(error)) })
     return () => { cancelled = true }
-  }, [userId, expiryAlertDays])
+  }, [userId, expiryAlertDays, isSignedIn])
 
   const filtered = sortMode === 'urgent'
     ? [...items].sort((a, b) => (a.expiryDate ? new Date(a.expiryDate).getTime() : Infinity) - (b.expiryDate ? new Date(b.expiryDate).getTime() : Infinity))
@@ -242,6 +271,25 @@ function App() {
     setProfileMenuOpen(false)
     await Promise.all([loadItems(), loadDashboard()])
   }
+  const signIn = async (event) => {
+    event.preventDefault()
+    setLoginLoading(true); setLoginError('')
+    try {
+      const { data } = await axios.post('/api/auth/login', { email: loginEmail, password: loginPassword })
+      localStorage.setItem('pantry-access-token', data.token)
+      axios.defaults.headers.common.Authorization = `Bearer ${data.token}`
+      setLoginPassword(''); setLoading(true); setIsSignedIn(true)
+    } catch (error) { setLoginError(error.response?.data?.error || 'Could not sign in. Check your connection and try again.') }
+    finally { setLoginLoading(false); setAuthReady(true) }
+  }
+  const signOut = () => {
+    localStorage.removeItem('pantry-access-token')
+    delete axios.defaults.headers.common.Authorization
+    setIsSignedIn(false); setProfileMenuOpen(false); setLoginError('')
+  }
+
+  if (!authReady) return <main className="auth-screen"><div className="auth-card"><span className="brand-mark"><Leaf size={21} /></span><p>Opening your pantry…</p></div></main>
+  if (!isSignedIn) return <main className="auth-screen"><form className="auth-card" onSubmit={signIn}><span className="brand-mark"><Leaf size={21} /></span><p className="eyebrow">YOUR KITCHEN</p><h1>Welcome to Pantry</h1><p>Sign in with your pantry email and password.</p><label>Email<input type="email" autoComplete="username" autoFocus required value={loginEmail} onChange={(event) => setLoginEmail(event.target.value)} /></label><label>Password<input type="password" autoComplete="current-password" required value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} /></label>{loginError && <p className="auth-error" role="alert">{loginError}</p>}<button className="primary-button" type="submit" disabled={loginLoading}>{loginLoading ? 'Signing in…' : 'Sign in'}</button></form></main>
 
   return <div className="app-shell">
     <aside className="sidebar">
@@ -250,11 +298,11 @@ function App() {
       <button className="nav-link selected"><LayoutDashboard size={18} />Overview <span className="nav-dot" /></button>
       <button className="nav-link" onClick={() => { setActiveCategory('All items'); document.querySelector('.inventory')?.scrollIntoView({ behavior: 'smooth' }) }}><CookingPot size={18} />My pantry <span className="nav-count">{total}</span></button>
       <button className="nav-link" onClick={() => document.querySelector('.recipe-card')?.scrollIntoView({ behavior: 'smooth' })}><Sparkles size={18} />What to cook</button>
-      <div className="sidebar-bottom"><div className="weekly-card"><div className="weekly-icon"><Leaf size={18} /></div><p>A little less waste,<br /><strong>a lot more good.</strong></p><div className="weekly-meter"><span /></div><small>{fresh} fresh things in your kitchen</small></div><button className="nav-link muted" onClick={() => { setShoppingMessage(''); setShoppingOpen(true) }}><ShoppingBasket size={18} />Shopping list <span className="nav-count">{shoppingList.length}</span></button><button className="nav-link muted" onClick={openPreferences}><Settings2 size={18} />Preferences</button><div className="profile-shell"><div className="profile"><button className="profile-main" onClick={() => setProfileMenuOpen(!profileMenuOpen)} aria-expanded={profileMenuOpen}><span className="avatar">P</span><span><strong>{pantryName}</strong><small>Home pantry</small></span></button><button className="profile-more" onClick={() => setProfileMenuOpen(!profileMenuOpen)} aria-label="Open pantry menu" aria-expanded={profileMenuOpen}><MoreHorizontal size={18} /></button></div>{profileMenuOpen && <div className="profile-menu" role="menu"><button role="menuitem" onClick={refreshPantry}>Refresh pantry</button><button role="menuitem" onClick={() => { setRenameDraft(pantryName); setRenameOpen(true); setProfileMenuOpen(false) }}>Rename pantry</button><button role="menuitem" onClick={openPreferences}>Preferences</button></div>}</div></div>
+      <div className="sidebar-bottom"><div className="weekly-card"><div className="weekly-icon"><Leaf size={18} /></div><p>A little less waste,<br /><strong>a lot more good.</strong></p><div className="weekly-meter"><span /></div><small>{fresh} fresh things in your kitchen</small></div><button className="nav-link muted" onClick={() => { setShoppingMessage(''); setShoppingOpen(true) }}><ShoppingBasket size={18} />Shopping list <span className="nav-count">{shoppingList.length}</span></button><button className="nav-link muted" onClick={openPreferences}><Settings2 size={18} />Preferences</button><div className="profile-shell"><div className="profile"><button className="profile-main" onClick={() => setProfileMenuOpen(!profileMenuOpen)} aria-expanded={profileMenuOpen}><span className="avatar">P</span><span><strong>{pantryName}</strong><small>Home pantry</small></span></button><button className="profile-more" onClick={() => setProfileMenuOpen(!profileMenuOpen)} aria-label="Open pantry menu" aria-expanded={profileMenuOpen}><MoreHorizontal size={18} /></button></div>{profileMenuOpen && <div className="profile-menu" role="menu"><button role="menuitem" onClick={refreshPantry}>Refresh pantry</button><button role="menuitem" onClick={() => { setRenameDraft(pantryName); setRenameOpen(true); setProfileMenuOpen(false) }}>Rename pantry</button><button role="menuitem" onClick={openPreferences}>Preferences</button><button role="menuitem" onClick={signOut}>Sign out</button></div>}</div></div>
     </aside>
 
     <main className="main-content" id="top">
-      <header className="topbar"><div className="breadcrumb">Your kitchen <span>/</span> <strong>Overview</strong></div><div className="top-actions"><span className="today-label">{todayShort}</span><button className="icon-button notification" aria-label={soon.length ? `View ${expiringCount} items nearing expiry` : 'No items nearing expiry'} onClick={showExpiringItems}><Bell size={18} />{soon.length > 0 && <i />}</button><button className="mobile-settings icon-button" onClick={openPreferences} aria-label="Preferences"><Settings2 size={17} /></button><div className="mobile-profile-anchor"><button className="mobile-profile-menu icon-button" onClick={() => setProfileMenuOpen(!profileMenuOpen)} aria-label="Open pantry menu" aria-expanded={profileMenuOpen}><MoreHorizontal size={18} /></button>{profileMenuOpen && <div className="mobile-menu"><button onClick={refreshPantry}>Refresh pantry</button><button onClick={() => { setRenameDraft(pantryName); setRenameOpen(true); setProfileMenuOpen(false) }}>Rename pantry</button><button onClick={openPreferences}>Preferences</button></div>}</div><button className="help-button" onClick={() => setHelpOpen(true)}><CircleHelp size={17} /> Help</button></div></header>
+      <header className="topbar"><div className="breadcrumb">Your kitchen <span>/</span> <strong>Overview</strong></div><div className="top-actions"><span className="today-label">{todayShort}</span><button className="icon-button notification" aria-label={soon.length ? `View ${expiringCount} items nearing expiry` : 'No items nearing expiry'} onClick={showExpiringItems}><Bell size={18} />{soon.length > 0 && <i />}</button><button className="mobile-settings icon-button" onClick={openPreferences} aria-label="Preferences"><Settings2 size={17} /></button><div className="mobile-profile-anchor"><button className="mobile-profile-menu icon-button" onClick={() => setProfileMenuOpen(!profileMenuOpen)} aria-label="Open pantry menu" aria-expanded={profileMenuOpen}><MoreHorizontal size={18} /></button>{profileMenuOpen && <div className="mobile-menu"><button onClick={refreshPantry}>Refresh pantry</button><button onClick={() => { setRenameDraft(pantryName); setRenameOpen(true); setProfileMenuOpen(false) }}>Rename pantry</button><button onClick={openPreferences}>Preferences</button><button onClick={signOut}>Sign out</button></div>}</div><button className="help-button" onClick={() => setHelpOpen(true)}><CircleHelp size={17} /> Help</button></div></header>
       <div className="page-wrap">
         <section className="welcome-row"><div><div className="eyebrow"><span /> {todayLong}</div><h1>Your kitchen,<br className="mobile-break" /> at a glance<span>.</span></h1><p className="subtitle">A good meal starts with knowing what you have.</p></div><button className="primary-button" onClick={openNew}><Plus size={18} /> Add an item</button></section>
 

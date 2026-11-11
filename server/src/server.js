@@ -1,6 +1,7 @@
 import "dotenv/config";
 import cors from "cors";
 import express from "express";
+import { createHmac, scryptSync, timingSafeEqual } from "node:crypto";
 import OpenAI from "openai";
 import { prisma } from "./config/prisma.js";
 import { buildPantryRecipeSuggestions } from "./services/recipeSuggestions.js";
@@ -8,6 +9,11 @@ import { buildPantryRecipeSuggestions } from "./services/recipeSuggestions.js";
 const app = express();
 const port = Number(process.env.PORT || 5050);
 const openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
+const isProduction = process.env.NODE_ENV === "production";
+const accessSecret = process.env.PANTRY_SESSION_SECRET || (isProduction ? "" : "local-development-session-secret-change-me");
+if (isProduction && (accessSecret.length < 32 || !process.env.CLIENT_ORIGIN || !process.env.PANTRY_ACCESS_PASSWORD || process.env.PANTRY_ACCESS_PASSWORD.length < 12)) {
+  throw new Error("Production requires a 32-character PANTRY_SESSION_SECRET, a 12-character PANTRY_ACCESS_PASSWORD, and CLIENT_ORIGIN.");
+}
 
 app.use(cors({ origin: process.env.CLIENT_ORIGIN || true }));
 app.use(express.json({ limit: "1mb" }));
@@ -83,9 +89,77 @@ function validateIngredient(body, { partial = false } = {}) {
   return { data, errors };
 }
 
+const signToken = (userId) => {
+  const payload = Buffer.from(JSON.stringify({ sub: userId, exp: Date.now() + 12 * 60 * 60 * 1000 })).toString("base64url");
+  const signature = createHmac("sha256", accessSecret).update(payload).digest("base64url");
+  return `${payload}.${signature}`;
+};
+
+function verifyToken(token) {
+  const [payload, signature] = String(token || "").split(".");
+  if (!payload || !signature) return null;
+  const expected = createHmac("sha256", accessSecret).update(payload).digest();
+  let received;
+  try { received = Buffer.from(signature, "base64url"); } catch { return null; }
+  if (received.length !== expected.length || !timingSafeEqual(received, expected)) return null;
+  try {
+    const data = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return Number.isSafeInteger(data.sub) && data.sub > 0 && data.exp > Date.now() ? data.sub : null;
+  } catch { return null; }
+}
+
+const loginAttempts = new Map();
+app.post("/api/auth/login", async (req, res, next) => {
+  try {
+    const address = req.ip || "unknown";
+    const attempt = loginAttempts.get(address);
+    if (attempt && attempt.until > Date.now() && attempt.count >= 8) {
+      return res.status(429).json({ error: "Too many sign-in attempts. Please wait a little and try again." });
+    }
+    const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+    const password = typeof req.body?.password === "string" ? req.body.password : "";
+    if (!email || email.length > 191 || password.length > 512) return res.status(400).json({ error: "Enter a valid email and password." });
+    const user = email ? await prisma.user.findUnique({ where: { email } }) : null;
+    let valid = false;
+    if (user?.passwordHash.startsWith("scrypt:")) {
+      const [, salt, savedHash] = user.passwordHash.split(":");
+      const actual = scryptSync(password, salt, 64);
+      const expected = Buffer.from(savedHash, "hex");
+      valid = actual.length === expected.length && timingSafeEqual(actual, expected);
+    }
+    if (!valid) {
+      const current = attempt?.until > Date.now() ? attempt : { count: 0, until: Date.now() + 15 * 60 * 1000 };
+      current.count += 1;
+      loginAttempts.set(address, current);
+      return res.status(401).json({ error: "That password did not match. Try again." });
+    }
+    loginAttempts.delete(address);
+    res.json({ token: signToken(user.id), name: user.name });
+  } catch (error) { next(error); }
+});
+
+function requirePantryAuth(req, res, next) {
+  const token = req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.slice(7) : "";
+  const userId = verifyToken(token);
+  if (!userId) return res.status(401).json({ error: "Please sign in to your pantry." });
+  req.pantryUserId = userId;
+  next();
+}
+
+app.get("/api/auth/session", requirePantryAuth, async (req, res, next) => {
+  try {
+    const user = await prisma.user.findUnique({ where: { id: req.pantryUserId }, select: { id: true, name: true } });
+    if (!user) return res.status(401).json({ error: "This pantry is no longer available. Please sign in again." });
+    res.json(user);
+  } catch (error) { next(error); }
+});
+
+app.use("/api/ingredients", requirePantryAuth);
+app.use("/api/recipes", requirePantryAuth);
+
 app.get("/api/ingredients", async (req, res, next) => {
   try {
-    const { where, error } = ingredientFilters(req.query);
+    const { where, error } = ingredientFilters({ ...req.query, userId: req.pantryUserId });
     if (error) return res.status(400).json({ error });
     const sortBy = req.query.sortBy || "createdAt";
     const sortOrder = req.query.sortOrder || "desc";
@@ -100,7 +174,7 @@ app.get("/api/ingredients", async (req, res, next) => {
 
 app.get("/api/ingredients/summary", async (req, res, next) => {
   try {
-    const { where, error } = ingredientFilters(req.query);
+    const { where, error } = ingredientFilters({ ...req.query, userId: req.pantryUserId });
     if (error) return res.status(400).json({ error });
     const days = req.query.days === undefined ? 4 : Number(req.query.days);
     if (!Number.isInteger(days) || days < 1 || days > 60) return res.status(400).json({ error: "days must be an integer from 1 to 60." });
@@ -127,7 +201,7 @@ app.get("/api/ingredients/summary", async (req, res, next) => {
 
 app.get("/api/ingredients/categories", async (req, res, next) => {
   try {
-    const { where, error } = ingredientFilters({ ...req.query, category: undefined, q: undefined });
+    const { where, error } = ingredientFilters({ ...req.query, userId: req.pantryUserId, category: undefined, q: undefined });
     if (error) return res.status(400).json({ error });
     const rows = await prisma.ingredient.findMany({ where, select: { category: true } });
     const counts = new Map();
@@ -143,7 +217,7 @@ app.get("/api/ingredients/categories", async (req, res, next) => {
 
 app.get("/api/ingredients/grouped", async (req, res, next) => {
   try {
-    const { where, error } = ingredientFilters({ ...req.query, category: undefined, q: undefined });
+    const { where, error } = ingredientFilters({ ...req.query, userId: req.pantryUserId, category: undefined, q: undefined });
     if (error) return res.status(400).json({ error });
     const ingredients = await prisma.ingredient.findMany({ where, orderBy: { name: "asc" } });
     const groups = new Map(pantryCategories.map((category) => [category, []]));
@@ -161,7 +235,7 @@ app.get("/api/ingredients/:id", async (req, res, next) => {
   const id = parseId(req.params.id);
   if (!id) return res.status(400).json({ error: "id must be a positive integer." });
   try {
-    const ingredient = await prisma.ingredient.findUnique({ where: { id } });
+    const ingredient = await prisma.ingredient.findFirst({ where: { id, userId: req.pantryUserId } });
     if (!ingredient) return res.status(404).json({ error: "Ingredient not found." });
     res.json(ingredient);
   } catch (error) {
@@ -171,8 +245,9 @@ app.get("/api/ingredients/:id", async (req, res, next) => {
 
 app.post("/api/ingredients", async (req, res, next) => {
   try {
-    const { data, errors } = validateIngredient(req.body);
+    const { data, errors } = validateIngredient({ ...req.body, userId: req.pantryUserId });
     if (Object.keys(errors).length) return res.status(400).json({ error: "Validation failed.", details: errors });
+    data.userId = req.pantryUserId;
     const ingredient = await prisma.ingredient.create({ data });
     res.status(201).json(ingredient);
   } catch (error) {
@@ -186,8 +261,9 @@ app.put("/api/ingredients/:id", async (req, res, next) => {
   try {
     const { data, errors } = validateIngredient(req.body, { partial: true });
     if (Object.keys(errors).length) return res.status(400).json({ error: "Validation failed.", details: errors });
+    delete data.userId;
     if (Object.keys(data).length === 0) return res.status(400).json({ error: "Provide at least one ingredient field to update." });
-    const ingredient = await prisma.ingredient.update({ where: { id }, data });
+    const ingredient = await prisma.ingredient.update({ where: { id, userId: req.pantryUserId }, data });
     res.json(ingredient);
   } catch (error) {
     next(error);
@@ -198,7 +274,8 @@ app.delete("/api/ingredients/:id", async (req, res, next) => {
   const id = parseId(req.params.id);
   if (!id) return res.status(400).json({ error: "id must be a positive integer." });
   try {
-    await prisma.ingredient.delete({ where: { id } });
+    const result = await prisma.ingredient.deleteMany({ where: { id, userId: req.pantryUserId } });
+    if (!result.count) return res.status(404).json({ error: "Ingredient not found." });
     res.status(204).end();
   } catch (error) {
     next(error);
