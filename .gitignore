@@ -1,0 +1,23 @@
+# Dependencies and build output
+**/node_modules/
+**/dist/
+server/generated/prisma/
+
+# Secrets and local environment files
+.env
+.env.*
+server/.env
+client/.env
+!**/.env.example
+
+# Generated editor and agent support files
+**/.agents/
+**/.claude/
+**/.cursor/
+**/.devin/
+**/.windsurf/
+
+# Local and temporary files
+.DS_Store
+*.log
+server/prisma.config.ts.backup
