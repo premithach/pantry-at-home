@@ -4,7 +4,7 @@ Node.js ES-module API for the Pantry web app. It uses Express, Prisma 7, and MyS
 
 ## Configure and run
 
-Create `server/.env` with a MySQL `DATABASE_URL`. `OPENAI_API_KEY` enables provider-generated recipe ideas; `OPENAI_MODEL`, `PORT`, and `CLIENT_ORIGIN` are optional.
+Copy `.env.example` to `.env` and replace the MySQL connection placeholders in `DATABASE_URL`. `OPENAI_API_KEY` enables provider-generated recipe ideas; `OPENAI_MODEL`, `PORT`, and `CLIENT_ORIGIN` are optional.
 
 ```sh
 npm install
