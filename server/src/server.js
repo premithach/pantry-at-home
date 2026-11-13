@@ -1,7 +1,7 @@
 import "dotenv/config";
 import cors from "cors";
 import express from "express";
-import { createHmac, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import OpenAI from "openai";
 import { prisma } from "./config/prisma.js";
 import { buildPantryRecipeSuggestions } from "./services/recipeSuggestions.js";
@@ -108,33 +108,72 @@ function verifyToken(token) {
   } catch { return null; }
 }
 
-const loginAttempts = new Map();
+const hashPassword = (password) => {
+  const salt = randomBytes(16).toString("hex");
+  return `scrypt:${salt}:${scryptSync(password, salt, 64).toString("hex")}`;
+};
+const isValidPassword = (password, passwordHash) => {
+  if (!passwordHash?.startsWith("scrypt:")) return false;
+  const [, salt, savedHash] = passwordHash.split(":");
+  const expected = Buffer.from(savedHash || "", "hex");
+  const actual = scryptSync(password, salt, 64);
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+};
+const authAttempts = new Map();
+function checkAuthRateLimit(req, res) {
+  const address = req.ip || "unknown";
+  const attempt = authAttempts.get(address);
+  if (attempt && attempt.until > Date.now() && attempt.count >= 8) {
+    res.status(429).json({ error: "Too many attempts. Please wait a little and try again." });
+    return null;
+  }
+  return { address, attempt };
+}
+function recordAuthFailure(address, attempt) {
+  const current = attempt?.until > Date.now() ? attempt : { count: 0, until: Date.now() + 15 * 60 * 1000 };
+  current.count += 1;
+  authAttempts.set(address, current);
+}
+
+app.post("/api/auth/signup", async (req, res, next) => {
+  try {
+    const rate = checkAuthRateLimit(req, res);
+    if (!rate) return;
+    const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+    const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+    const password = typeof req.body?.password === "string" ? req.body.password : "";
+    if (!name || name.length > 80) return res.status(400).json({ error: "Enter your name (up to 80 characters)." });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 191) return res.status(400).json({ error: "Enter a valid email address." });
+    if (password.length < 12 || password.length > 512) return res.status(400).json({ error: "Choose a password with at least 12 characters." });
+    const existing = await prisma.user.findUnique({ where: { email } });
+    if (existing) {
+      recordAuthFailure(rate.address, rate.attempt);
+      return res.status(409).json({ error: "An account with that email already exists. Sign in instead." });
+    }
+    const user = await prisma.user.create({ data: { name, email, passwordHash: hashPassword(password) }, select: { id: true, name: true, email: true } });
+    authAttempts.delete(rate.address);
+    res.status(201).json({ ...user, token: signToken(user.id) });
+  } catch (error) {
+    if (error?.code === "P2002") return res.status(409).json({ error: "An account with that email already exists. Sign in instead." });
+    next(error);
+  }
+});
+
 app.post("/api/auth/login", async (req, res, next) => {
   try {
-    const address = req.ip || "unknown";
-    const attempt = loginAttempts.get(address);
-    if (attempt && attempt.until > Date.now() && attempt.count >= 8) {
-      return res.status(429).json({ error: "Too many sign-in attempts. Please wait a little and try again." });
-    }
+    const rate = checkAuthRateLimit(req, res);
+    if (!rate) return;
     const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
     const password = typeof req.body?.password === "string" ? req.body.password : "";
     if (!email || email.length > 191 || password.length > 512) return res.status(400).json({ error: "Enter a valid email and password." });
     const user = email ? await prisma.user.findUnique({ where: { email } }) : null;
-    let valid = false;
-    if (user?.passwordHash.startsWith("scrypt:")) {
-      const [, salt, savedHash] = user.passwordHash.split(":");
-      const actual = scryptSync(password, salt, 64);
-      const expected = Buffer.from(savedHash, "hex");
-      valid = actual.length === expected.length && timingSafeEqual(actual, expected);
-    }
+    const valid = user ? isValidPassword(password, user.passwordHash) : false;
     if (!valid) {
-      const current = attempt?.until > Date.now() ? attempt : { count: 0, until: Date.now() + 15 * 60 * 1000 };
-      current.count += 1;
-      loginAttempts.set(address, current);
+      recordAuthFailure(rate.address, rate.attempt);
       return res.status(401).json({ error: "That password did not match. Try again." });
     }
-    loginAttempts.delete(address);
-    res.json({ token: signToken(user.id), name: user.name });
+    authAttempts.delete(rate.address);
+    res.json({ token: signToken(user.id), id: user.id, name: user.name, email: user.email });
   } catch (error) { next(error); }
 });
 
@@ -148,7 +187,7 @@ function requirePantryAuth(req, res, next) {
 
 app.get("/api/auth/session", requirePantryAuth, async (req, res, next) => {
   try {
-    const user = await prisma.user.findUnique({ where: { id: req.pantryUserId }, select: { id: true, name: true } });
+    const user = await prisma.user.findUnique({ where: { id: req.pantryUserId }, select: { id: true, name: true, email: true } });
     if (!user) return res.status(401).json({ error: "This pantry is no longer available. Please sign in again." });
     res.json(user);
   } catch (error) { next(error); }

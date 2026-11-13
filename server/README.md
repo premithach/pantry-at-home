@@ -49,7 +49,7 @@ After Vercel gives the site its address, set the API's `CLIENT_ORIGIN` to that e
 
 ## Sign-in and access
 
-The website has a simple email and password sign-in screen. The first account is created by the database seed step using `DEFAULT_USER_EMAIL` and `PANTRY_ACCESS_PASSWORD`. The password is stored as a hash, not plain text. Login sessions expire after 12 hours. This version has one initial pantry account; it does not have a public registration flow or password reset yet.
+The website has a simple email and password sign-in screen with a **Create an account** option. New users can enter their name, email, and a password of at least 12 characters; Pantry creates their account and signs them in. Each account can see and change only its own pantry items. The first account is still created by the database seed step using `DEFAULT_USER_EMAIL` and `PANTRY_ACCESS_PASSWORD`. Passwords are stored as hashes. Sessions expire after 12 hours. Email verification and password reset are not available yet.
 
 The API requires a valid session for pantry and recipe routes. The health check stays public for deployment checks. It only allows the signed-in account to access its own pantry items. Use HTTPS on both services and never commit `.env` files or put `PANTRY_ACCESS_PASSWORD`, `PANTRY_SESSION_SECRET`, or `OPENAI_API_KEY` in Vercel. Only `VITE_API_BASE_URL` belongs in the website settings.
 
@@ -57,6 +57,7 @@ The API requires a valid session for pantry and recipe routes. The health check 
 
 - `GET /api/health` — check API and database connectivity
 - `POST /api/auth/login` — sign in with `{ "email": "...", "password": "..." }`
+- `POST /api/auth/signup` — create an account with `{ "name": "...", "email": "...", "password": "..." }`
 - `GET /api/auth/session` — check the current sign-in
 - `GET /api/ingredients` — list, filter, search, and sort ingredients
 - `GET /api/ingredients/:id` — fetch one pantry item

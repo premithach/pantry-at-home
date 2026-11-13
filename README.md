@@ -50,7 +50,7 @@ People can choose how soon Pantry should flag food that is nearing its use-by da
 
 ## Sign in
 
-Pantry has a simple email and password sign-in. The first Pantry account is set up for the household. The email and password are chosen when Pantry is prepared for use. There is no public sign-up or password reset yet.
+People can create an account with their name, email, and password, then sign in with the same email and password. Each account has its own pantry. The first account may also be prepared when Pantry is set up. Password reset and email verification are not available yet.
 
 ## What Pantry saves
 
@@ -62,7 +62,7 @@ Pantry items are saved with the pantry. Photos, shopping-list items, recipe idea
 - It does not know when someone uses food. People must update or remove it themselves.
 - A use-by date is only a reminder. Pantry cannot tell if food is safe to eat.
 - Recipe ideas may not fit every allergy or dietary need. People should check the ingredients.
-- Pantry has one household account. It does not yet support separate accounts, sign-up, password reset, or multiple shared pantries.
+- Accounts have separate pantry items and browser-saved preferences. People cannot share a pantry across different accounts yet. Password reset and email verification are not available yet.
 - The shopping list does not have checkboxes, prices, or item amounts. Bought items do not move into the pantry automatically.
 
 ## How we know Pantry is helping

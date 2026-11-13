@@ -23,14 +23,20 @@ storageKeys.forEach((key) => {
   const legacyKey = `pantrypal-${key}`
   if (localStorage.getItem(currentKey) === null && localStorage.getItem(legacyKey) !== null) localStorage.setItem(currentKey, localStorage.getItem(legacyKey))
 })
+const accountStorageKey = (userId, key) => `pantry-${userId}-${key}`
+;['recipes', 'photos', 'shopping-list', 'expiry-days', 'diet', 'name', 'last-unit'].forEach((key) => {
+  const oldKey = `pantry-${key}`
+  const accountKey = accountStorageKey(1, key)
+  if (localStorage.getItem(accountKey) === null && localStorage.getItem(oldKey) !== null) localStorage.setItem(accountKey, localStorage.getItem(oldKey))
+})
 const foodImageFor = (name = '', category = '') => {
   const normalized = name.toLowerCase()
   const images = [[/chill?ies?|chill?i|jalape[nñ]o|hot pepper|chili pepper/, '🌶️'], [/egg/, '🥚'], [/milk/, '🥛'], [/spinach|kale|lettuce|greens/, '🥬'], [/tomato/, '🍅'], [/pasta|penne|spaghetti|noodle/, '🍝'], [/parmesan|cheese|mozzarella|feta/, '🧀'], [/avocado/, '🥑'], [/olive oil|oil/, '🫒'], [/bread|toast/, '🍞'], [/apple/, '🍎'], [/banana/, '🍌'], [/carrot/, '🥕'], [/onion/, '🧅'], [/garlic/, '🧄'], [/rice/, '🍚'], [/chicken/, '🍗'], [/fish|salmon/, '🐟'], [/yogurt/, '🥣'], [/butter/, '🧈'], [/potato/, '🥔'], [/mushroom/, '🍄'], [/lemon/, '🍋']]
   return images.find(([pattern]) => pattern.test(normalized))?.[1] || ({ Produce: '🥦', Dairy: '🧈', Pantry: '🥫', Protein: '🍗', Bakery: '🥖', Other: '🧺' })[category] || '🧺'
 }
-const readSavedRecipeData = () => {
+const readSavedRecipeData = (userId = 1) => {
   try {
-    const saved = JSON.parse(localStorage.getItem('pantry-recipes') || 'null')
+    const saved = JSON.parse(localStorage.getItem(accountStorageKey(userId, 'recipes')) || 'null')
     return Array.isArray(saved?.recipes) ? saved : null
   } catch { return null }
 }
@@ -54,6 +60,8 @@ function App() {
   const [authReady, setAuthReady] = useState(() => !localStorage.getItem('pantry-access-token'))
   const [isSignedIn, setIsSignedIn] = useState(false)
   const [loginEmail, setLoginEmail] = useState('')
+  const [loginName, setLoginName] = useState('')
+  const [loginMode, setLoginMode] = useState('login')
   const [loginPassword, setLoginPassword] = useState('')
   const [loginError, setLoginError] = useState('')
   const [loginLoading, setLoginLoading] = useState(false)
@@ -70,8 +78,8 @@ function App() {
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [deletingId, setDeletingId] = useState(null)
   const [photoDraft, setPhotoDraft] = useState('')
-  const [photos, setPhotos] = useState(() => { try { return JSON.parse(localStorage.getItem('pantry-photos') || '{}') } catch { return {} } })
-  const [shoppingList, setShoppingList] = useState(() => { try { return JSON.parse(localStorage.getItem('pantry-shopping-list') || '[]') } catch { return [] } })
+  const [photos, setPhotos] = useState(() => { try { return JSON.parse(localStorage.getItem(accountStorageKey(1, 'photos')) || '{}') } catch { return {} } })
+  const [shoppingList, setShoppingList] = useState(() => { try { return JSON.parse(localStorage.getItem(accountStorageKey(1, 'shopping-list')) || '[]') } catch { return [] } })
   const [shoppingDraft, setShoppingDraft] = useState('')
   const [shoppingOpen, setShoppingOpen] = useState(false)
   const [shoppingMessage, setShoppingMessage] = useState('')
@@ -83,16 +91,16 @@ function App() {
   const [recipesLoading, setRecipesLoading] = useState(false)
   const [selectedRecipe, setSelectedRecipe] = useState(null)
   const [preferencesOpen, setPreferencesOpen] = useState(false)
-  const [expiryAlertDays, setExpiryAlertDays] = useState(() => Number(localStorage.getItem('pantry-expiry-days') || 4))
-  const [expiryDraft, setExpiryDraft] = useState(() => localStorage.getItem('pantry-expiry-days') || '4')
-  const [dietDraft, setDietDraft] = useState(() => localStorage.getItem('pantry-diet') || 'No preference')
+  const [expiryAlertDays, setExpiryAlertDays] = useState(() => Number(localStorage.getItem(accountStorageKey(1, 'expiry-days')) || 4))
+  const [expiryDraft, setExpiryDraft] = useState(() => localStorage.getItem(accountStorageKey(1, 'expiry-days')) || '4')
+  const [dietDraft, setDietDraft] = useState(() => localStorage.getItem(accountStorageKey(1, 'diet')) || 'No preference')
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
-  const [pantryName, setPantryName] = useState(() => localStorage.getItem('pantry-name') || 'My kitchen')
+  const [pantryName, setPantryName] = useState(() => localStorage.getItem(accountStorageKey(1, 'name')) || 'My kitchen')
   const [renameOpen, setRenameOpen] = useState(false)
-  const [renameDraft, setRenameDraft] = useState(() => localStorage.getItem('pantry-name') || 'My kitchen')
+  const [renameDraft, setRenameDraft] = useState(() => localStorage.getItem(accountStorageKey(1, 'name')) || 'My kitchen')
   const [form, setForm] = useState({ name: '', quantity: '1', unit: 'pcs', category: 'Produce', expiryDate: '' })
-  const [lastUnit, setLastUnit] = useState(() => localStorage.getItem('pantry-last-unit') || 'pcs')
-  const userId = Number(localStorage.getItem('pantry-user-id') || 1)
+  const [lastUnit, setLastUnit] = useState(() => localStorage.getItem(accountStorageKey(1, 'last-unit')) || 'pcs')
+  const [userId, setUserId] = useState(() => Number(localStorage.getItem('pantry-user-id') || 1))
 
   useEffect(() => {
     if (!notice || noticeKind !== 'success') return undefined
@@ -105,9 +113,26 @@ function App() {
     window.addEventListener('pantry-auth-expired', expired)
     const token = localStorage.getItem('pantry-access-token')
     if (!token) return () => window.removeEventListener('pantry-auth-expired', expired)
-    axios.get('/api/auth/session').then(() => setIsSignedIn(true)).catch(() => localStorage.removeItem('pantry-access-token')).finally(() => setAuthReady(true))
+    axios.get('/api/auth/session').then(({ data }) => { setUserId(data.id); localStorage.setItem('pantry-user-id', String(data.id)); setIsSignedIn(true) }).catch(() => localStorage.removeItem('pantry-access-token')).finally(() => setAuthReady(true))
     return () => window.removeEventListener('pantry-auth-expired', expired)
   }, [])
+
+  useEffect(() => {
+    if (!isSignedIn) return
+    const readJson = (key, fallback) => { try { return JSON.parse(localStorage.getItem(accountStorageKey(userId, key)) || JSON.stringify(fallback)) } catch { return fallback } }
+    const saved = readSavedRecipeData(userId)
+    const name = localStorage.getItem(accountStorageKey(userId, 'name')) || 'My kitchen'
+    queueMicrotask(() => {
+      setPhotos(readJson('photos', {}))
+      setShoppingList(readJson('shopping-list', []))
+      setRecipes(saved?.recipes || null); setRecipeNotice(saved?.notice || '')
+      setExpiryAlertDays(Number(localStorage.getItem(accountStorageKey(userId, 'expiry-days')) || 4))
+      setExpiryDraft(localStorage.getItem(accountStorageKey(userId, 'expiry-days')) || '4')
+      setDietDraft(localStorage.getItem(accountStorageKey(userId, 'diet')) || 'No preference')
+      setPantryName(name); setRenameDraft(name)
+      setLastUnit(localStorage.getItem(accountStorageKey(userId, 'last-unit')) || 'pcs')
+    })
+  }, [isSignedIn, userId])
 
   const loadItems = async ({ category = activeCategory, search = query, sort = sortMode } = {}) => {
     try {
@@ -188,9 +213,9 @@ function App() {
         const nextPhotos = { ...photos }
         if (photoDraft) nextPhotos[savedItem.id] = photoDraft
         else delete nextPhotos[savedItem.id]
-        localStorage.setItem('pantry-photos', JSON.stringify(nextPhotos)); setPhotos(nextPhotos)
+        localStorage.setItem(accountStorageKey(userId, 'photos'), JSON.stringify(nextPhotos)); setPhotos(nextPhotos)
       } catch { photoWasSaved = false }
-      try { localStorage.setItem('pantry-last-unit', form.unit.trim()) } catch { /* The pantry record is already saved. */ }
+      try { localStorage.setItem(accountStorageKey(userId, 'last-unit'), form.unit.trim()) } catch { /* The pantry record is already saved. */ }
       setLastUnit(form.unit.trim())
       if (!wasEditing) { setActiveCategory('All items'); setQuery('') }
       setDialog(false); await Promise.all([loadItems(wasEditing ? undefined : { category: 'All items', search: '' }), loadDashboard()])
@@ -203,7 +228,7 @@ function App() {
     setDeletingId(item.id)
     try {
       await axios.delete(`/api/ingredients/${item.id}`)
-      const nextPhotos = { ...photos }; delete nextPhotos[item.id]; localStorage.setItem('pantry-photos', JSON.stringify(nextPhotos)); setPhotos(nextPhotos)
+      const nextPhotos = { ...photos }; delete nextPhotos[item.id]; localStorage.setItem(accountStorageKey(userId, 'photos'), JSON.stringify(nextPhotos)); setPhotos(nextPhotos)
       setDeleteTarget(null)
       await Promise.all([loadItems(), loadDashboard()])
       setNoticeKind('success'); setNotice(`${item.name} deleted successfully.`)
@@ -215,22 +240,22 @@ function App() {
     setRecipesLoading(true)
     try {
       const expiringNames = soon.map((item) => item.name)
-      const { data } = await axios.post('/api/recipes/suggestions', { ingredients: items.map((item) => item.name), dietaryPreference: localStorage.getItem('pantry-diet') || 'No preference', prioritize: expiringNames }, { timeout: 50000 })
+      const { data } = await axios.post('/api/recipes/suggestions', { ingredients: items.map((item) => item.name), dietaryPreference: localStorage.getItem(accountStorageKey(userId, 'diet')) || 'No preference', prioritize: expiringNames }, { timeout: 50000 })
       const saved = { recipes: data.recipes || [], notice: data.notice || '' }
       setRecipes(saved.recipes)
       setRecipeNotice(saved.notice)
-      localStorage.setItem('pantry-recipes', JSON.stringify(saved))
+      localStorage.setItem(accountStorageKey(userId, 'recipes'), JSON.stringify(saved))
       document.querySelector('.ideas-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     } catch (error) {
       const saved = { recipes: recipes || [], notice: error.response?.data?.error || 'Recipe ideas are taking a moment. Please try again.' }
       setRecipeNotice(saved.notice)
-      localStorage.setItem('pantry-recipes', JSON.stringify(saved))
+      localStorage.setItem(accountStorageKey(userId, 'recipes'), JSON.stringify(saved))
     }
     finally { setRecipesLoading(false) }
   }
   const openPreferences = () => {
     setExpiryDraft(String(expiryAlertDays))
-    setDietDraft(localStorage.getItem('pantry-diet') || 'No preference')
+    setDietDraft(localStorage.getItem(accountStorageKey(userId, 'diet')) || 'No preference')
     setPreferencesOpen(true)
     setProfileMenuOpen(false)
   }
@@ -238,13 +263,13 @@ function App() {
     event.preventDefault()
     const days = Number(expiryDraft)
     if (!Number.isInteger(days) || days < 1 || days > 60) return
-    localStorage.setItem('pantry-expiry-days', String(days))
-    localStorage.setItem('pantry-diet', dietDraft)
+    localStorage.setItem(accountStorageKey(userId, 'expiry-days'), String(days))
+    localStorage.setItem(accountStorageKey(userId, 'diet'), dietDraft)
     setExpiryAlertDays(days)
     setPreferencesOpen(false)
     setNoticeKind('success'); setNotice('Preferences saved.')
   }
-  const setShoppingItems = (next) => { setShoppingList(next); localStorage.setItem('pantry-shopping-list', JSON.stringify(next)) }
+  const setShoppingItems = (next) => { setShoppingList(next); localStorage.setItem(accountStorageKey(userId, 'shopping-list'), JSON.stringify(next)) }
   const addRecipeMissingToShopping = (recipe) => {
     const owned = new Set(items.map((item) => item.name.toLowerCase()))
     const missing = (recipe.ingredients || []).filter((name) => !owned.has(name.toLowerCase()))
@@ -262,7 +287,7 @@ function App() {
     event.preventDefault()
     const name = renameDraft.trim()
     if (!name) return
-    localStorage.setItem('pantry-name', name)
+    localStorage.setItem(accountStorageKey(userId, 'name'), name)
     setPantryName(name)
     setRenameOpen(false)
     setNoticeKind('success'); setNotice('Pantry name updated.')
@@ -275,10 +300,13 @@ function App() {
     event.preventDefault()
     setLoginLoading(true); setLoginError('')
     try {
-      const { data } = await axios.post('/api/auth/login', { email: loginEmail, password: loginPassword })
+      const endpoint = loginMode === 'signup' ? '/api/auth/signup' : '/api/auth/login'
+      const payload = loginMode === 'signup' ? { name: loginName, email: loginEmail, password: loginPassword } : { email: loginEmail, password: loginPassword }
+      const { data } = await axios.post(endpoint, payload)
       localStorage.setItem('pantry-access-token', data.token)
+      localStorage.setItem('pantry-user-id', String(data.id))
       axios.defaults.headers.common.Authorization = `Bearer ${data.token}`
-      setLoginPassword(''); setLoading(true); setIsSignedIn(true)
+      setUserId(data.id); setLoginPassword(''); setLoading(true); setIsSignedIn(true)
     } catch (error) { setLoginError(error.response?.data?.error || 'Could not sign in. Check your connection and try again.') }
     finally { setLoginLoading(false); setAuthReady(true) }
   }
@@ -289,7 +317,7 @@ function App() {
   }
 
   if (!authReady) return <main className="auth-screen"><div className="auth-card"><span className="brand-mark"><Leaf size={21} /></span><p>Opening your pantry…</p></div></main>
-  if (!isSignedIn) return <main className="auth-screen"><form className="auth-card" onSubmit={signIn}><span className="brand-mark"><Leaf size={21} /></span><p className="eyebrow">YOUR KITCHEN</p><h1>Welcome to Pantry</h1><p>Sign in with your pantry email and password.</p><label>Email<input type="email" autoComplete="username" autoFocus required value={loginEmail} onChange={(event) => setLoginEmail(event.target.value)} /></label><label>Password<input type="password" autoComplete="current-password" required value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} /></label>{loginError && <p className="auth-error" role="alert">{loginError}</p>}<button className="primary-button" type="submit" disabled={loginLoading}>{loginLoading ? 'Signing in…' : 'Sign in'}</button></form></main>
+  if (!isSignedIn) return <main className="auth-screen"><form className="auth-card" onSubmit={signIn}><span className="brand-mark"><Leaf size={21} /></span><p className="eyebrow">YOUR KITCHEN</p><h1>{loginMode === 'signup' ? 'Create your account' : 'Welcome to Pantry'}</h1><p>{loginMode === 'signup' ? 'Start a pantry of your own. It only takes a moment.' : 'Sign in with your email and password.'}</p>{loginMode === 'signup' && <label>Your name<input type="text" autoComplete="name" autoFocus required maxLength={80} value={loginName} onChange={(event) => setLoginName(event.target.value)} /></label>}<label>Email<input type="email" autoComplete="email" autoFocus={loginMode === 'login'} required value={loginEmail} onChange={(event) => setLoginEmail(event.target.value)} /></label><label>Password<input type="password" autoComplete={loginMode === 'signup' ? 'new-password' : 'current-password'} minLength={loginMode === 'signup' ? 12 : undefined} required value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} />{loginMode === 'signup' && <small>Use at least 12 characters.</small>}</label>{loginError && <p className="auth-error" role="alert">{loginError}</p>}<button className="primary-button" type="submit" disabled={loginLoading}>{loginLoading ? (loginMode === 'signup' ? 'Creating account…' : 'Signing in…') : (loginMode === 'signup' ? 'Create account' : 'Sign in')}</button><p className="auth-switch">{loginMode === 'signup' ? 'Already have an account?' : 'New to Pantry?'} <button type="button" onClick={() => { setLoginMode(loginMode === 'signup' ? 'login' : 'signup'); setLoginError('') }}>{loginMode === 'signup' ? 'Sign in' : 'Create an account'}</button></p></form></main>
 
   return <div className="app-shell">
     <aside className="sidebar">
