@@ -31,7 +31,20 @@ const parseId = (value) => {
   const id = Number(value);
   return Number.isSafeInteger(id) && id > 0 ? id : null;
 };
-const pantryCategories = ["Produce", "Dairy", "Pantry", "Protein", "Bakery", "Other"];
+const pantryCategories = ["Veggies", "Fruits", "Dairy", "Meat & fish", "Bakery", "Cupboard", "Other"];
+const legacyPantryCategories = { Produce: "Veggies", Pantry: "Cupboard", Protein: "Meat & fish" };
+
+function resolvePantryCategory(category) {
+  if (!category) return "Other";
+  if (pantryCategories.includes(category)) return category;
+  return legacyPantryCategories[category] || "Other";
+}
+
+function categoryFilterValue(category) {
+  if (category === "Other") return null;
+  const legacy = Object.entries(legacyPantryCategories).find(([, current]) => current === category)?.[0];
+  return legacy ? { in: [category, legacy] } : category;
+}
 
 function ingredientFilters(query) {
   const where = {};
@@ -42,7 +55,8 @@ function ingredientFilters(query) {
   }
   if (query.category && query.category !== "All items") {
     if (!pantryCategories.includes(query.category)) return { error: `category must be one of: ${pantryCategories.join(", ")}.` };
-    where.category = query.category === "Other" ? null : query.category;
+    const category = categoryFilterValue(query.category);
+    where.category = category === null ? null : category;
   }
   if (query.q !== undefined) {
     if (typeof query.q !== "string" || query.q.length > 100) return { error: "q must be a search string of at most 100 characters." };
@@ -245,7 +259,7 @@ app.get("/api/ingredients/categories", async (req, res, next) => {
     const rows = await prisma.ingredient.findMany({ where, select: { category: true } });
     const counts = new Map();
     for (const row of rows) {
-      const name = pantryCategories.includes(row.category) ? row.category : "Other";
+      const name = resolvePantryCategory(row.category);
       counts.set(name, (counts.get(name) || 0) + 1);
     }
     res.json({ total: rows.length, categories: [{ name: "All items", count: rows.length }, ...pantryCategories.map((name) => ({ name, count: counts.get(name) || 0 }))] });
@@ -261,7 +275,7 @@ app.get("/api/ingredients/grouped", async (req, res, next) => {
     const ingredients = await prisma.ingredient.findMany({ where, orderBy: { name: "asc" } });
     const groups = new Map(pantryCategories.map((category) => [category, []]));
     for (const ingredient of ingredients) {
-      const category = pantryCategories.includes(ingredient.category) ? ingredient.category : "Other";
+      const category = resolvePantryCategory(ingredient.category);
       groups.get(category).push(ingredient);
     }
     res.json(pantryCategories.map((category) => ({ category, count: groups.get(category).length, items: groups.get(category) })).filter((group) => group.count));
